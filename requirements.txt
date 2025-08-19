@@ -7,3 +7,10 @@ streamlit-chat==0.1.1
 pypdf==5.9.0
 fastembed==0.7.1
 chromadb==1.0.15
+
+ollama  
+langchain-ollama
+langchain-postgres
+sqlalchemy
+psycopg2-binary
+python-dotenv
