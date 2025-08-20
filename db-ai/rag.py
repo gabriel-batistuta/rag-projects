@@ -1,142 +1,111 @@
-# rag_ollama_pg.py
-"""
-Exemplo RAG: Ollama (LLM) + Ollama embeddings + LangChain + Postgres (pgvector)
-Supondo: tabela `documentos(id int, title text, content text)` na sua BD de aplicação.
-"""
+#! https://github.com/timescale/private-rag-example/blob/main/local-rag-app-llama3.2.ipynb
 
-import os
-from typing import List
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
-from langchain.schema import Document
+import psycopg2
 
-# LangChain + Ollama imports
-from langchain_ollama import ChatOllama, OllamaEmbeddings
-from langchain_postgres.vectorstores import PGVector
-from langchain.chains import RetrievalQA
-from langchain.embeddings.base import Embeddings
+# the knowledge base
+dummy_data = [
+    {"title": "Seoul Tower", "content": "Seoul Tower is a communication and observation tower located on Namsan Mountain in central Seoul, South Korea."},
+    {"title": "Gwanghwamun Gate", "content": "Gwanghwamun is the main and largest gate of Gyeongbokgung Palace, in Jongno-gu, Seoul, South Korea."},
+    {"title": "Bukchon Hanok Village", "content": "Bukchon Hanok Village is a Korean traditional village in Seoul with a long history."},
+    {"title": "Myeong-dong Shopping Street", "content": "Myeong-dong is one of the primary shopping districts in Seoul, South Korea."},
+    {"title": "Dongdaemun Design Plaza", "content": "The Dongdaemun Design Plaza is a major urban development landmark in Seoul, South Korea."}
+]
 
-# ---------- CONFIG (troque conforme seu ambiente) ----------
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/meubd")
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")  # padrão Ollama
-OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")  # exemplo: nomic-embed-text
-OLLAMA_LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "llama3.1")  # modelo de geração
-PGVECTOR_TABLE = os.getenv("PGVECTOR_TABLE", "rag_documents")
-EMBED_BATCH_SIZE = 32
-
-# ---------- DB (aplicação) - exemplo SQLAlchemy ----------
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine)
-
-def fetch_documents_from_app_db(limit=1000) -> List[Document]:
-    """
-    Extrai textos (ex: conteúdos de artigos) do seu BD de aplicação e retorna lista de Documents do LangChain.
-    Ajuste a query conforme seu esquema real.
-    """
-    sql = "SELECT id, title, content FROM documentos WHERE content IS NOT NULL"
-    docs: List[Document] = []
-    with engine.connect() as conn:
-        res = conn.execute(text(sql))
-        for row in res:
-            doc_id = row["id"]
-            title = row["title"] or ""
-            content = row["content"] or ""
-            metadata = {"id": doc_id, "title": title}
-            docs.append(Document(page_content=content, metadata=metadata))
-    return docs
-
-# ---------- Embeddings (Ollama) ----------
-def get_ollama_embeddings() -> Embeddings:
-    """
-    Instancia o wrapper de embeddings do Ollama (via langchain-ollama).
-    """
-    emb = OllamaEmbeddings(
-        model=OLLAMA_EMBED_MODEL,
-        base_url=OLLAMA_BASE_URL
+def connect_db():
+    return psycopg2.connect( # use the credentials of your postgresql database 
+        host = 'localhost',
+        database = 'postgres',
+        user = 'postgres',
+        password = 'password',
+        port = '5432'
     )
-    return emb
 
-# ---------- Indexar no Postgres (pgvector) via LangChain PGVector ----------
-def create_or_connect_vectorstore(embeddings: Embeddings):
-    """
-    Conecta/Cria coleção pgvector (langchain_postgres.PGVector).
-    """
-    # conexão usada internamente por PGVector; o construtor pede "client" (sqlalchemy URL) e embeddings
-    vectorstore = PGVector.from_documents(
-        documents=[],  # docs vazios aqui; usaremos add_documents depois
-        embeddings=embeddings,
-        client=DATABASE_URL,
-        collection_name=PGVECTOR_TABLE,  # nome da collection/tabela usada
-    )
-    return vectorstore
+conn = connect_db()
+cur = conn.cursor()
+cur.execute("""
+        CREATE TABLE IF NOT EXISTS documents (
+            id SERIAL PRIMARY KEY,
+            title TEXT,
+            content TEXT,
+            embedding VECTOR(768)
+        );
+    """)
+conn.commit()
+cur.close()
+conn.close()
 
-def ingest_documents_to_vectorstore(vectorstore: PGVector, docs: List[Document], embeddings: Embeddings):
-    """
-    Gera embeddings (em batch) e insere no vectorstore.
-    """
-    # a forma simples: vectorstore.add_documents(docs, embedding=embeddings) -- mas varia por versões.
-    # Utilizamos add_documents se disponível:
-    try:
-        vectorstore.add_documents(docs)
-    except Exception as e:
-        # fallback manual: gerar embeddings e chamar add_texts
-        texts = [d.page_content for d in docs]
-        metadatas = [d.metadata for d in docs]
-        embs = []
-        for i in range(0, len(texts), EMBED_BATCH_SIZE):
-            batch = texts[i:i+EMBED_BATCH_SIZE]
-            embs_batch = embeddings.embed_documents(batch)
-            embs.extend(embs_batch)
-        vectorstore.add_texts(texts=texts, metadatas=metadatas, embeddings=embs)
+conn = connect_db()
+cur = conn.cursor()
 
-# ---------- Build RAG chain ----------
-def build_rag_chain():
-    # LLM (Chat) via langchain-ollama
-    llm = ChatOllama(model=OLLAMA_LLM_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.0)
+# use the port at which your ollama service is running.
+for doc in dummy_data:
+    cur.execute("""
+        INSERT INTO documents (title, content, embedding)
+        VALUES (
+            %(title)s,
+            %(content)s,
+            ollama_embed('nomic-embed-text', concat(%(title)s, ' - ', %(content)s), _host=>'http://ollama:11434')
+        )
+    """, doc)
 
-    # embeddings
-    embeddings = get_ollama_embeddings()
+conn.commit()
+cur.close()
+conn.close()
 
-    # connect vectorstore
-    vectorstore = create_or_connect_vectorstore(embeddings)
+conn = connect_db()
+cur = conn.cursor()
+    
+cur.execute("""
+    SELECT title, content, vector_dims(embedding) 
+    FROM documents;
+""")
 
-    # retriever
-    retriever = vectorstore.as_retriever(search_type="cosine", search_kwargs={"k": 4})
+rows = cur.fetchall()
+for row in rows:
+    print(f"Title: {row[0]}, Content: {row[1]}, Embedding Dimensions: {row[2]}")
 
-    # RetrievalQA chain
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",  # "map_reduce" ou "refine" também são opções para contextos maiores
-        retriever=retriever,
-        return_source_documents=True
-    )
-    return qa_chain, embeddings, vectorstore
+cur.close()
+conn.close()
 
-# ---------- Exemplo de uso ----------
-if __name__ == "__main__":
-    print("1) Buscando documentos da base da aplicação...")
-    docs = fetch_documents_from_app_db()
-    print(f"-> encontrados {len(docs)} docs (amostra)...")
+query = "Tell me about gates in South Korea."
 
-    print("2) Conectando embeddings Ollama e vectorstore pgvector...")
-    embeddings = get_ollama_embeddings()
-    vs = create_or_connect_vectorstore(embeddings)
+conn = connect_db()
+cur = conn.cursor()
+    
+# Embed the query using the ollama_embed function
+cur.execute("""
+    SELECT ollama_embed('nomic-embed-text', %s, _host=>'http://ollama:11434');
+""", (query,))
+query_embedding = cur.fetchone()[0]
 
-    if len(docs) > 0:
-        print("3) Ingestando documentos (embedding + inserção em pgvector)...")
-        ingest_documents_to_vectorstore(vs, docs, embeddings)
-        print("-> ingest concluída.")
+# Retrieve relevant documents based on cosine distance
+cur.execute("""
+    SELECT title, content, 1 - (embedding <=> %s) AS similarity
+    FROM documents
+    ORDER BY similarity DESC
+    LIMIT 3;
+""", (query_embedding,))
 
-    print("4) Construindo RAG chain (retriever + LLM)...")
-    qa_chain, _, _ = build_rag_chain()
+rows = cur.fetchall()
+    
+# Prepare the context for generating the response
+context = "\n\n".join([f"Title: {row[0]}\nContent: {row[1]}" for row in rows])
+print(context)
 
-    # exemplo de pergunta
-    pergunta = "Qual é o procedimento para renovação de matrícula?"
-    print(f"Pergunta: {pergunta}")
-    resp = qa_chain({"query": pergunta})
-    answer = resp["result"]
-    sources = resp.get("source_documents", [])
-    print("Resposta:\n", answer)
-    print("\nFontes (IDs / titles):")
-    for s in sources:
-        print("-", s.metadata.get("id"), s.metadata.get("title"))
+cur.close()
+conn.close()
+
+conn = connect_db()
+cur = conn.cursor()
+
+# Generate the response using the ollama_generate function
+cur.execute("""
+    SELECT ollama_generate('llama3.2', %s, _host=>'http://ollama:11434');
+""", (f"Query: {query}\nContext: {context}",))
+    
+model_response = cur.fetchone()[0]
+print(model_response['response'])
+    
+cur.close()
+conn.close()
+
