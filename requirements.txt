@@ -4,3 +4,8 @@ python-dotenv
 requests
 fastapi
 uvicorn
+langchain
+langchain-ollama
+langchain-community
+chromadb
+ollama

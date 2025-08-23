@@ -16,9 +16,9 @@ class RequestAPI():
     def __init__(self, base_url:str="http://localhost:3000"):
         self.base_url = base_url
         # self.email = 
-        self.__token_super = self.__login_super()
-        if not self.__token_super:
-            self.__token_super = dotenv.get_key(".env", "SUPER_TOKEN")
+        self.__token = self.login_admin()
+        if not self.__token:
+            self.__token = dotenv.get_key(".env", "ADMIN_TOKEN")
         print("Credenciais carregadas com sucesso...")
 
 
@@ -42,6 +42,21 @@ class RequestAPI():
                 "password": "123456"
             }
         })
+        print(response.status_code, response.json())
+        credentials = response.json()
+        token = credentials["token"]
+        dotenv.set_key(".env", "SUPER_TOKEN", token)
+        return token
+
+    def pegar_funcionarios(self):
+        url = f"{self.base_url}/api/v1/funcionarios"
+        headers = {
+            "Authorization": f"Bearer {self.__token}"
+        }
+
+        response = requests.get(url, headers=headers)
+        print(response.status_code, response.json())
+        return response.json()
 
     def criar_loja(self):
         # adicionar credenciais de usuário da loja ao .env logo depois de criar a loja com sucesso 
@@ -113,4 +128,4 @@ class RequestAPI():
 
 if __name__ == "__main__":
     r = RequestAPI()
-    r.get_todos_usuarios()
+    r.pegar_funcionarios()
